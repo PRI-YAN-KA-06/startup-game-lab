@@ -44,6 +44,14 @@ const schema = defineSchema(
       ),
       questionIndex: v.number(),
       totalQuestions: v.number(),
+      /** Which game the room is currently driving — Game 01 or Game 02. */
+      mode: v.optional(
+        v.union(v.literal("quiz"), v.literal("sequence")),
+      ),
+      /** Current Sequence Ladder stage (0-based) when mode = "sequence". */
+      seqIndex: v.optional(v.number()),
+      /** Set when the operator ends the session — releases the Q&A report. */
+      finished: v.optional(v.boolean()),
       roundStartedAt: v.optional(v.number()), // server clock when timer began
       timerMs: v.optional(v.number()),
       correctChoice: v.optional(v.number()), // set on reveal
@@ -70,6 +78,19 @@ const schema = defineSchema(
     })
       .index("by_room_question", ["roomId", "questionIndex"])
       .index("by_room_player_q", ["roomId", "playerId", "questionIndex"]),
+
+    // Game 02 — Sequence Ladder answers: the player's claimed order, as an
+    // array of step indices (correct answer is always [0, 1, … n-1]).
+    sequenceAnswers: defineTable({
+      roomId: v.id("gameRooms"),
+      stageIndex: v.number(),
+      playerId: v.id("gamePlayers"),
+      order: v.array(v.number()),
+      correct: v.optional(v.boolean()),
+      awarded: v.optional(v.boolean()),
+    })
+      .index("by_room_stage", ["roomId", "stageIndex"])
+      .index("by_room_player_s", ["roomId", "playerId", "stageIndex"]),
   },
   {
     schemaValidation: false,

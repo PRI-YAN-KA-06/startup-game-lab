@@ -1,5 +1,4 @@
 import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
   BulbIcon,
@@ -54,20 +53,13 @@ const STEPS = [
 const TERMS = QUIZ_QUESTIONS.map((q) => q.concept);
 
 export default function Landing() {
-  // The bulb lights itself as the page opens, then stays clickable.
-  const [lit, setLit] = useState(false);
-  useEffect(() => {
-    const t = window.setTimeout(() => setLit(true), 700);
-    return () => window.clearTimeout(t);
-  }, []);
-
   return (
     <div className="min-h-screen bg-paper">
       {/* ---------------- top bar ---------------- */}
       <header className="sticky top-0 z-40 border-b-[3px] border-ink bg-paper/95 backdrop-blur-[2px]">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link to="/" className="shrink-0">
-            <IicLockup on={lit} />
+            <IicLockup on />
           </Link>
           <nav className="hidden items-center gap-6 text-xs font-bold uppercase tracking-[0.16em] md:flex">
             <a href="#games" className="hover:underline decoration-2">
@@ -166,52 +158,35 @@ export default function Landing() {
             </dl>
           </motion.div>
 
-          {/* interactive bulb */}
+          {/* the bulb — always lit */}
           <motion.div
             initial={{ opacity: 0, scale: 0.94 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.5, delay: 0.15 }}
             className="mx-auto w-full max-w-md"
           >
-            <button
-              type="button"
-              aria-pressed={lit}
-              onClick={() => setLit((v) => !v)}
-              className="nb-panel nb-shadow-lg block w-full overflow-hidden p-6 text-left transition-colors duration-300"
-              style={{ background: lit ? "#ffd23f" : "#ffffff" }}
-            >
+            <div className="nb-panel nb-shadow-lg block w-full overflow-hidden p-6 text-left">
               <div className="flex items-center justify-between">
-                <span className="nb-tag bg-white">
-                  {lit ? "Idea: lights on" : "Idea: lights off"}
-                </span>
-                <span className="nb-tag bg-ink text-white">
-                  {lit ? "Tap to dim" : "Tap to light"}
-                </span>
+                <span className="nb-tag bg-white">Idea: lights on</span>
+                <span className="nb-tag bg-ink text-white">Always on</span>
               </div>
 
               <div className="relative mx-auto mt-4 flex h-56 items-center justify-center">
-                <CircleCluster
-                  className="absolute left-1/2 top-1/2 h-52 w-52 -translate-x-1/2 -translate-y-1/2 transition-opacity duration-300"
-                  style={{ opacity: lit ? 1 : 0.35 }}
-                />
+                <CircleCluster className="absolute left-1/2 top-1/2 h-52 w-52 -translate-x-1/2 -translate-y-1/2" />
                 <BulbIcon
-                  on={lit}
+                  on
                   className="relative h-44 w-44"
                   style={{ animation: "nb-float 4s ease-in-out infinite" }}
                 />
               </div>
 
               <div className="mt-2 border-t-[3px] border-ink pt-3">
-                <p className="nb-display text-xl">
-                  {lit ? "Gear turning. Let's build." : "Flip the switch."}
-                </p>
+                <p className="nb-display text-xl">Gear turning. Let's build.</p>
                 <p className="mt-1 text-sm font-medium text-ink/70">
-                  {lit
-                    ? "This is how the room feels when 30 players answer at once."
-                    : "Every startup starts with one switched-on idea."}
+                  This is how the room feels when 30 players answer at once.
                 </p>
               </div>
-            </button>
+            </div>
           </motion.div>
         </div>
       </section>
@@ -278,7 +253,7 @@ export default function Landing() {
             <article className="nb-panel nb-shadow flex flex-col">
               <div className="flex items-center justify-between border-b-[3px] border-ink bg-sky px-4 py-3">
                 <span className="nb-display text-lg">Game 02</span>
-                <span className="nb-tag bg-white">Next build</span>
+                <span className="nb-tag bg-white">5 stages</span>
               </div>
               <div className="flex flex-1 flex-col gap-3 p-5">
                 <h3 className="nb-display text-2xl">Sequence Ladder</h3>

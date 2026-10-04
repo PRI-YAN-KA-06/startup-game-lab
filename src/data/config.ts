@@ -16,6 +16,9 @@ export const QUIZ_TOTAL = 20;
 /** Operator-controlled round length. */
 export const ROUND_SECONDS = 10;
 
+/** Sequence Ladder rounds run longer — rearranging steps takes more thought. */
+export const SEQUENCE_SECONDS = 20;
+
 /**
  * Chatbot intro reel shown on the operator screen only.
  * Drop the file at public/videos/chatbot-intro.mp4 and it plays automatically;

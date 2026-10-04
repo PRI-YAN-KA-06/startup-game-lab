@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { IicLockup } from "@/components/brand/Brand";
 import { IntroTab } from "@/components/operator/IntroTab";
-import { NotesTab, SequenceTab } from "@/components/operator/ModuleTabs";
+import { NotesTab } from "@/components/operator/ModuleTabs";
 import { QuizTab } from "@/components/operator/QuizTab";
+import { SequenceTab } from "@/components/operator/SequenceTab";
 import { api } from "@/convex/_generated/api";
 import { EVENT, playerJoinUrl } from "@/data/config";
 import { useAuth } from "@/hooks/use-auth";
@@ -142,7 +143,7 @@ export default function OperatorConsole() {
       <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">
         {tab === "intro" && <IntroTab onOpenQuiz={() => setTab("quiz")} />}
         {tab === "quiz" && <QuizTab room={room} />}
-        {tab === "sequence" && <SequenceTab />}
+        {tab === "sequence" && <SequenceTab room={room} />}
         {tab === "notes" && <NotesTab />}
       </div>
     </ConsoleShell>

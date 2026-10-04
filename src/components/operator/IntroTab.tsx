@@ -1,5 +1,4 @@
 import { motion } from "framer-motion";
-import { useState } from "react";
 import { Link } from "react-router";
 import {
   BulbIcon,
@@ -38,8 +37,6 @@ const AGENDA = [
 
 /** The landing screen of the operator console: welcome + the video space. */
 export function IntroTab({ onOpenQuiz }: { onOpenQuiz: () => void }) {
-  const [lit, setLit] = useState(true);
-
   return (
     <div className="grid gap-6">
       {/* welcome hero */}
@@ -77,20 +74,13 @@ export function IntroTab({ onOpenQuiz }: { onOpenQuiz: () => void }) {
               >
                 Open live quiz →
               </button>
-              <button
-                type="button"
-                onClick={() => setLit((v) => !v)}
-                className="nb-btn bg-white text-sm"
-              >
-                {lit ? "Bulb: on" : "Bulb: off"}
-              </button>
             </div>
           </div>
 
           <div className="relative mx-auto flex h-56 w-full max-w-xs items-center justify-center">
             <CircleCluster className="absolute h-48 w-48" />
             <BulbIcon
-              on={lit}
+              on
               className="relative h-40 w-40"
               style={{ animation: "nb-float 4s ease-in-out infinite" }}
             />
@@ -99,7 +89,7 @@ export function IntroTab({ onOpenQuiz }: { onOpenQuiz: () => void }) {
               animate={{ y: [0, -4, 0] }}
               transition={{ duration: 2.4, repeat: Infinity }}
             >
-              {lit ? "Lights on" : "Tap the bulb"}
+              Lights on
             </motion.span>
           </div>
         </div>
@@ -124,15 +114,17 @@ export function IntroTab({ onOpenQuiz }: { onOpenQuiz: () => void }) {
           <VideoStage onEnded={onOpenQuiz} />
           <div className="grid gap-3">
             <p className="text-sm font-medium leading-relaxed text-ink/75">
-              The chatbot reel plays here before the session starts, then the
-              site hands over to the games. It never appears on player devices.
+              The chatbot reel plays here before the session starts — hit the
+              fullscreen button to throw it onto the projector for the whole
+              room, then the site hands over to the games. It never appears on
+              player devices.
             </p>
             <ul className="grid gap-2 text-sm font-bold">
               <li className="border-2 border-ink bg-sand px-3 py-2">
                 1 · Play the reel as the room settles
               </li>
               <li className="border-2 border-ink bg-sand px-3 py-2">
-                2 · Flip the bulb, set the energy
+                2 · Show it fullscreen to everyone
               </li>
               <li className="border-2 border-ink bg-sand px-3 py-2">
                 3 · Jump into the live quiz

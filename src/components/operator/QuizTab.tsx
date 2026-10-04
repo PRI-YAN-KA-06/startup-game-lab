@@ -49,6 +49,7 @@ export function QuizTab({ room }: { room: Doc<"gameRooms"> }) {
   const lockVoting = useMutation(api.game.lockVoting);
   const revealAnswer = useMutation(api.game.revealAnswer);
   const resetSession = useMutation(api.game.resetSession);
+  const finishGame = useMutation(api.game.finishGame);
 
   const question =
     QUIZ_QUESTIONS[room.questionIndex] ?? QUIZ_QUESTIONS[0];
@@ -58,6 +59,7 @@ export function QuizTab({ room }: { room: Doc<"gameRooms"> }) {
   const [qr, setQr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmFinish, setConfirmFinish] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fuel, setFuel] = useState<{ key: string; count: number } | null>(
     null,
@@ -258,6 +260,33 @@ export function QuizTab({ room }: { room: Doc<"gameRooms"> }) {
           {confirmReset
             ? "Tap again to wipe all stars"
             : "Reset session & stars"}
+        </button>
+
+        {/* end the session → the Q&A report unlocks on every player device */}
+        <button
+          type="button"
+          onClick={() => {
+            if (!confirmFinish) {
+              setConfirmFinish(true);
+              window.setTimeout(() => setConfirmFinish(false), 3500);
+              return;
+            }
+            setConfirmFinish(false);
+            guard(() => finishGame({ roomId: room._id }));
+          }}
+          className={`nb-btn w-full text-xs ${
+            room.finished
+              ? "bg-mint"
+              : confirmFinish
+                ? "bg-coral text-white"
+                : "bg-white"
+          }`}
+        >
+          {room.finished
+            ? "✓ Report released to players"
+            : confirmFinish
+              ? "Tap again to end the session"
+              : "End game · release Q&A report"}
         </button>
       </aside>
 

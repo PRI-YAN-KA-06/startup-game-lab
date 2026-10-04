@@ -3,13 +3,18 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { PLAYER_PASSCODE, QUIZ_TOTAL } from "../data/config";
+import { SEQ_TOTAL, SEQUENCE_STAGES } from "../data/sequenceQuestions";
 
 /**
  * Live room state for the operator-led quiz.
  *
- * The question pack itself ships in the JS bundle (so every device renders the
- * same prompt offline); Convex only carries the room phase, the timer, who
- * picked what, and how many stars each player has banked.
+ * The question packs themselves ship in the JS bundle (so every device renders
+ * the same prompts offline); Convex only carries the room phase, the timer,
+ * who picked what, and how many stars each player has banked.
+ *
+ * One room drives both games: `mode` says whether Game 01 (single-choice
+ * quiz) or Game 02 (Sequence Ladder) is on screen, and `finished` releases
+ * the end-of-session Q&A report to every player device.
  */
 
 const CODE_ALPHABET = "ACDEFGHJKLMNPQRTUVWXY3479";
@@ -41,6 +46,34 @@ async function clearAnswers(
     )
     .collect();
   for (const answer of old) await ctx.db.delete(answer._id);
+}
+
+async function clearSequenceAnswers(
+  ctx: MutationCtx,
+  roomId: Id<"gameRooms">,
+  stageIndex: number,
+) {
+  const old = await ctx.db
+    .query("sequenceAnswers")
+    .withIndex("by_room_stage", (q) =>
+      q.eq("roomId", roomId).eq("stageIndex", stageIndex),
+    )
+    .collect();
+  for (const answer of old) await ctx.db.delete(answer._id);
+}
+
+function clampIndex(value: number, total: number) {
+  return Math.max(0, Math.min(total - 1, Math.floor(value)));
+}
+
+function stageAt(index: number) {
+  return SEQUENCE_STAGES[clampIndex(index, SEQ_TOTAL)];
+}
+
+/** The correct Sequence Ladder answer is steps in their authored order. */
+function isCorrectSeqOrder(order: number[], length: number) {
+  if (order.length !== length) return false;
+  return order.every((value, i) => value === i);
 }
 
 /** Operator: spin up a fresh room with a 4-letter join code. */
@@ -134,14 +167,13 @@ export const startQuestion = mutation({
   handler: async (ctx, { roomId, index }) => {
     const room = await ctx.db.get(roomId);
     if (!room) throw new Error("Room not found.");
-    const safe = Math.max(
-      0,
-      Math.min(room.totalQuestions - 1, Math.floor(index)),
-    );
+    const safe = clampIndex(index, room.totalQuestions);
     await clearAnswers(ctx, roomId, safe);
     await ctx.db.patch(roomId, {
       phase: "question",
       questionIndex: safe,
+      mode: "quiz",
+      finished: false,
       awarded: false,
       roundStartedAt: undefined,
       timerMs: undefined,
@@ -163,6 +195,7 @@ export const startVoting = mutation({
     await clearAnswers(ctx, roomId, room.questionIndex);
     await ctx.db.patch(roomId, {
       phase: "voting",
+      mode: "quiz",
       roundStartedAt: Date.now(),
       timerMs: clamp * 1000,
       awarded: false,
@@ -189,6 +222,9 @@ export const submitAnswer = mutation({
       throw new Error("Time's up — that round is closed.");
     }
     if (choice < 0 || choice > 3) throw new Error("Pick one of the four options.");
+    if (room.mode === "sequence") {
+      throw new Error("The Sequence Ladder is live — arrange the steps instead.");
+    }
     const player = await ctx.db.get(playerId);
     if (!player || player.roomId !== roomId) {
       throw new Error("You are not on this room's roster.");
@@ -273,6 +309,220 @@ export const revealAnswer = mutation({
   },
 });
 
+/* ------------------------------------------------------------------ */
+/*  Game 02 — Sequence Ladder                                          */
+/* ------------------------------------------------------------------ */
+
+/** Operator: put a sequence stage on screen (steps stay hidden until the clock). */
+export const startSeqStage = mutation({
+  args: { roomId: v.id("gameRooms"), index: v.number() },
+  handler: async (ctx, { roomId, index }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) throw new Error("Room not found.");
+    const safe = clampIndex(index, SEQ_TOTAL);
+    await clearSequenceAnswers(ctx, roomId, safe);
+    await ctx.db.patch(roomId, {
+      phase: "question",
+      mode: "sequence",
+      seqIndex: safe,
+      finished: false,
+      awarded: false,
+      roundStartedAt: undefined,
+      timerMs: undefined,
+      correctChoice: undefined,
+    });
+  },
+});
+
+/** Operator: the START button for a sequence stage — opens arranging for N seconds. */
+export const startSeqVoting = mutation({
+  args: { roomId: v.id("gameRooms"), seconds: v.number() },
+  handler: async (ctx, { roomId, seconds }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) throw new Error("Room not found.");
+    if (room.mode !== "sequence") {
+      throw new Error("Put a sequence stage live first.");
+    }
+    if (room.phase !== "question") {
+      throw new Error("Pick a stage before starting the timer.");
+    }
+    const clamp = Math.max(5, Math.min(120, Math.round(seconds)));
+    const stageIndex = room.seqIndex ?? 0;
+    await clearSequenceAnswers(ctx, roomId, stageIndex);
+    await ctx.db.patch(roomId, {
+      phase: "voting",
+      roundStartedAt: Date.now(),
+      timerMs: clamp * 1000,
+      awarded: false,
+      correctChoice: undefined,
+    });
+  },
+});
+
+/** Player: lock in the claimed order while the timer runs. */
+export const submitSequence = mutation({
+  args: {
+    roomId: v.id("gameRooms"),
+    playerId: v.id("gamePlayers"),
+    order: v.array(v.number()),
+  },
+  handler: async (ctx, { roomId, playerId, order }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) throw new Error("Room not found.");
+    if (room.mode !== "sequence" || room.phase !== "voting") {
+      throw new Error("The sequence round is not open right now.");
+    }
+    const endsAt = (room.roundStartedAt ?? 0) + (room.timerMs ?? 0);
+    if (Date.now() > endsAt) {
+      throw new Error("Time's up — that stage is closed.");
+    }
+    const stageIndex = room.seqIndex ?? 0;
+    const size = stageAt(stageIndex).steps.length;
+    const unique = new Set(order);
+    if (
+      order.length !== size ||
+      unique.size !== size ||
+      order.some((i) => !Number.isInteger(i) || i < 0 || i >= size)
+    ) {
+      throw new Error("Use every step exactly once.");
+    }
+    const player = await ctx.db.get(playerId);
+    if (!player || player.roomId !== roomId) {
+      throw new Error("You are not on this room's roster.");
+    }
+    const existing = await ctx.db
+      .query("sequenceAnswers")
+      .withIndex("by_room_player_s", (q) =>
+        q
+          .eq("roomId", roomId)
+          .eq("playerId", playerId)
+          .eq("stageIndex", stageIndex),
+      )
+      .unique();
+    if (existing) {
+      const same =
+        existing.order.length === order.length &&
+        existing.order.every((value, i) => value === order[i]);
+      if (!same) await ctx.db.patch(existing._id, { order });
+      return;
+    }
+    await ctx.db.insert("sequenceAnswers", {
+      roomId,
+      stageIndex,
+      playerId,
+      order,
+    });
+  },
+});
+
+/**
+ * Operator: reveal the correct sequence and, exactly once per stage, bank
+ * +1 star for every player whose order matches end to end.
+ */
+export const revealSequence = mutation({
+  args: { roomId: v.id("gameRooms") },
+  handler: async (ctx, { roomId }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) throw new Error("Room not found.");
+    if (room.mode !== "sequence") {
+      throw new Error("The Sequence Ladder is not live.");
+    }
+    if (room.phase !== "locked" && room.phase !== "voting") {
+      throw new Error("Open the stage before revealing the sequence.");
+    }
+    const stageIndex = room.seqIndex ?? 0;
+    const size = stageAt(stageIndex).steps.length;
+    if (room.awarded) {
+      await ctx.db.patch(roomId, { phase: "revealed" });
+      return;
+    }
+
+    const answers = await ctx.db
+      .query("sequenceAnswers")
+      .withIndex("by_room_stage", (q) =>
+        q.eq("roomId", roomId).eq("stageIndex", stageIndex),
+      )
+      .collect();
+
+    for (const answer of answers) {
+      const isCorrect = isCorrectSeqOrder(answer.order, size);
+      await ctx.db.patch(answer._id, {
+        correct: isCorrect,
+        awarded: isCorrect,
+      });
+      if (isCorrect) {
+        const player = await ctx.db.get(answer.playerId);
+        if (player) {
+          await ctx.db.patch(player._id, { stars: player.stars + 1 });
+        }
+      }
+    }
+
+    await ctx.db.patch(roomId, { phase: "revealed", awarded: true });
+  },
+});
+
+/**
+ * Operator: live tally for the current stage — how many orders are in, plus
+ * who got it right once the sequence is revealed.
+ */
+export const getSeqTally = query({
+  args: { roomId: v.id("gameRooms"), stageIndex: v.number() },
+  handler: async (ctx, { roomId, stageIndex }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) return null;
+    const [answers, players] = await Promise.all([
+      ctx.db
+        .query("sequenceAnswers")
+        .withIndex("by_room_stage", (q) =>
+          q.eq("roomId", roomId).eq("stageIndex", stageIndex),
+        )
+        .collect(),
+      ctx.db
+        .query("gamePlayers")
+        .withIndex("by_room", (q) => q.eq("roomId", roomId))
+        .collect(),
+    ]);
+    const nameById = new Map(players.map((p) => [p._id, p.name]));
+    const names: string[] = [];
+    const correctNames: string[] = [];
+    const wrongNames: string[] = [];
+    let correctCount = 0;
+    for (const answer of answers) {
+      const name = nameById.get(answer.playerId) ?? "?";
+      names.push(name);
+      if (answer.correct) {
+        correctCount += 1;
+        correctNames.push(name);
+      } else if (answer.correct === false) {
+        wrongNames.push(name);
+      }
+    }
+    return {
+      answered: answers.length,
+      players: players.length,
+      names,
+      revealed: room.phase === "revealed",
+      correctCount: room.phase === "revealed" ? correctCount : null,
+      correctNames: room.phase === "revealed" ? correctNames : [],
+      wrongNames: room.phase === "revealed" ? wrongNames : [],
+    };
+  },
+});
+
+/**
+ * Operator: end the session — every player device immediately gets the
+ * "game complete" card with the Q&A report download.
+ */
+export const finishGame = mutation({
+  args: { roomId: v.id("gameRooms") },
+  handler: async (ctx, { roomId }) => {
+    const room = await ctx.db.get(roomId);
+    if (!room) throw new Error("Room not found.");
+    await ctx.db.patch(roomId, { finished: true });
+  },
+});
+
 /** Operator: wipe answers + stars and return the room to the lobby. */
 export const resetSession = mutation({
   args: { roomId: v.id("gameRooms") },
@@ -282,6 +532,13 @@ export const resetSession = mutation({
       .withIndex("by_room_question", (q) => q.eq("roomId", roomId))
       .collect();
     for (const answer of answers) {
+      await ctx.db.delete(answer._id);
+    }
+    const seqAnswers = await ctx.db
+      .query("sequenceAnswers")
+      .withIndex("by_room_stage", (q) => q.eq("roomId", roomId))
+      .collect();
+    for (const answer of seqAnswers) {
       await ctx.db.delete(answer._id);
     }
     const players = await ctx.db
@@ -294,6 +551,9 @@ export const resetSession = mutation({
     await ctx.db.patch(roomId, {
       phase: "lobby",
       questionIndex: 0,
+      seqIndex: 0,
+      mode: undefined,
+      finished: false,
       awarded: false,
       roundStartedAt: undefined,
       timerMs: undefined,

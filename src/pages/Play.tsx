@@ -10,14 +10,17 @@ import {
   OPTION_STYLES,
   QUIZ_TOTAL,
   ROUND_SECONDS,
+  SEQUENCE_SECONDS,
 } from "@/data/config";
 import { QUIZ_QUESTIONS } from "@/data/quizQuestions";
+import { SEQ_TOTAL, SEQUENCE_STAGES } from "@/data/sequenceQuestions";
 import { useCountdown } from "@/hooks/use-countdown";
 import {
   clearPlayerSession,
   loadPlayerSession,
   type PlayerSession,
 } from "@/lib/player-session";
+import { downloadReport } from "@/lib/report";
 
 /* ------------------------------------------------------------------ */
 /*  shell                                                              */
@@ -178,16 +181,27 @@ function Arena({
   const me = useQuery(api.game.getMyPlayer, { playerId: session.playerId });
   const roster = useQuery(api.game.listPlayers, { roomId: session.roomId });
   const submit = useMutation(api.game.submitAnswer);
+  const submitSequence = useMutation(api.game.submitSequence);
 
   const [picks, setPicks] = useState<Record<number, number>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [burst, setBurst] = useState(false);
+  // Game 02 sequence ladder — drafts & submissions keyed by stage index
+  const [seqDrafts, setSeqDrafts] = useState<Record<number, number[]>>({});
+  const [seqSubmitted, setSeqSubmitted] = useState<Record<number, number[]>>({});
+  const [seqErrors, setSeqErrors] = useState<Record<number, string>>({});
+  const [buildingReport, setBuildingReport] = useState(false);
   const prevStars = useRef<number | null>(null);
 
   const phase = room?.phase;
   const questionIndex = room?.questionIndex ?? 0;
-  const question = QUIZ_QUESTIONS[questionIndex];
+  const question = QUIZ_QUESTIONS[questionIndex] ?? QUIZ_QUESTIONS[0];
   const countdown = useCountdown(room?.roundStartedAt, room?.timerMs);
+
+  // which game is on screen — Game 01 quiz or Game 02 sequence ladder
+  const isSeq = room?.mode === "sequence";
+  const seqIndex = room?.seqIndex ?? 0;
+  const seqStage = SEQUENCE_STAGES[seqIndex] ?? SEQUENCE_STAGES[0];
 
   // keyed by question, so a new question always starts clean — no reset effect
   const picked = picks[questionIndex] ?? null;
@@ -230,6 +244,64 @@ function Arena({
     }
   }
 
+  /* ---------- Game 02: arrangement helpers ---------- */
+
+  function placeStep(stepIdx: number) {
+    if (!room || phase !== "voting") return;
+    setSeqDrafts((prev) => {
+      const current = prev[seqIndex] ?? [];
+      if (
+        current.includes(stepIdx) ||
+        current.length >= seqStage.steps.length
+      ) {
+        return prev;
+      }
+      return { ...prev, [seqIndex]: [...current, stepIdx] };
+    });
+  }
+
+  function pullStep(stepIdx: number) {
+    if (!room || phase !== "voting") return;
+    setSeqDrafts((prev) => ({
+      ...prev,
+      [seqIndex]: (prev[seqIndex] ?? []).filter((i) => i !== stepIdx),
+    }));
+  }
+
+  async function submitOrder() {
+    if (!room) return;
+    const order = seqDrafts[seqIndex] ?? [];
+    setSeqErrors((prev) => {
+      if (!(seqIndex in prev)) return prev;
+      const next = { ...prev };
+      delete next[seqIndex];
+      return next;
+    });
+    try {
+      await submitSequence({
+        roomId: room._id,
+        playerId: session.playerId,
+        order,
+      });
+      setSeqSubmitted((prev) => ({ ...prev, [seqIndex]: order }));
+    } catch (err) {
+      setSeqErrors((prev) => ({
+        ...prev,
+        [seqIndex]:
+          err instanceof Error ? err.message : "Could not send your order.",
+      }));
+    }
+  }
+
+  function grabReport() {
+    setBuildingReport(true);
+    try {
+      downloadReport();
+    } finally {
+      setBuildingReport(false);
+    }
+  }
+
   if (room === undefined || me === undefined) {
     return (
       <PlayerShell session={session}>
@@ -264,15 +336,33 @@ function Arena({
   const correct = question.correct;
   const totalAnswered = roster?.length ?? 0;
 
+  const nSteps = seqStage.steps.length;
+  const seqDraft = seqDrafts[seqIndex] ?? [];
+  const seqSubmission = seqSubmitted[seqIndex] ?? null;
+  const seqRemaining = seqStage.order.filter((i) => !seqDraft.includes(i));
+  const seqLockedIn =
+    seqSubmission !== null &&
+    seqSubmission.length === seqDraft.length &&
+    seqSubmission.every((v, i) => v === seqDraft[i]);
+  const seqMatched =
+    seqDraft.length === nSteps && seqDraft.every((v, i) => v === i);
+  const seqErr = seqErrors[seqIndex] ?? null;
+
   return (
     <PlayerShell session={session} onLeave={onLeave}>
       {/* status strip */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-[3px] border-ink bg-white px-4 py-3 shadow-[5px_5px_0_0_#0e0e0e]">
         <div className="flex items-center gap-3">
           <span className="nb-tag bg-cobalt text-white">{me.name}</span>
-          <span className="nb-tag bg-sand">
-            Q{questionIndex + 1}/{QUIZ_TOTAL}
-          </span>
+          {isSeq ? (
+            <span className="nb-tag bg-sand">
+              S{seqIndex + 1}/{SEQ_TOTAL}
+            </span>
+          ) : (
+            <span className="nb-tag bg-sand">
+              Q{questionIndex + 1}/{QUIZ_TOTAL}
+            </span>
+          )}
           {totalAnswered > 0 && (
             <span className="nb-tag bg-mint">{totalAnswered} in room</span>
           )}
@@ -281,6 +371,35 @@ function Arena({
           ★ <span className="text-sun">{me.stars}</span> stars
         </div>
       </div>
+
+      {/* end of session → the Q&A report unlocks right here */}
+      {room.finished && (
+        <div className="mb-5 border-[3px] border-ink bg-sun shadow-[5px_5px_0_0_#0e0e0e]">
+          <div className="flex items-center justify-between border-b-[3px] border-ink px-4 py-2.5">
+            <span className="nb-display text-base">Game complete</span>
+            <span className="nb-tag bg-ink text-white">★ {me.stars} final</span>
+          </div>
+          <div className="grid gap-3 p-4">
+            <p className="text-sm font-medium leading-relaxed text-ink/80">
+              Nice work, {me.name} — the session is wrapped. Take the full
+              Q&A report home: every prompt, every answer, every teaching
+              note.
+            </p>
+            <button
+              type="button"
+              onClick={grabReport}
+              className="nb-btn nb-shadow bg-ink text-white"
+            >
+              {buildingReport
+                ? "Building your PDF…"
+                : "Download Q&A report (PDF)"}
+            </button>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-ink/60">
+              {QUIZ_TOTAL} situation questions + {SEQ_TOTAL} sequence stages
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* timer */}
       {(phase === "voting" || phase === "locked") && (
@@ -312,16 +431,235 @@ function Arena({
 
       {/* question card */}
       <div className="nb-panel overflow-hidden">
-        <div className="flex items-center justify-between border-b-[3px] border-ink bg-violet px-4 py-2.5 text-white">
-          <span className="nb-tag bg-white text-ink">{question.kind}</span>
-          <span className="nb-display text-sm">{question.concept}</span>
-        </div>
+        {isSeq ? (
+          <div className="flex items-center justify-between border-b-[3px] border-ink bg-sky px-4 py-2.5">
+            <span className="nb-tag bg-white text-ink">Sequence</span>
+            <span className="nb-display text-sm">
+              {seqStage.label} · {seqStage.title}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between border-b-[3px] border-ink bg-violet px-4 py-2.5 text-white">
+            <span className="nb-tag bg-white text-ink">{question.kind}</span>
+            <span className="nb-display text-sm">{question.concept}</span>
+          </div>
+        )}
 
         <div className="p-5">
           <p className="text-lg font-bold leading-snug sm:text-xl">
-            {question.prompt}
+            {isSeq ? seqStage.prompt : question.prompt}
           </p>
 
+          {/* ---------- Game 02: sequence board ---------- */}
+          {isSeq && (
+            <div className="mt-5 grid gap-4">
+              {phase === "lobby" && (
+                <div className="grid place-items-center gap-3 py-8 text-center">
+                  <BulbIcon
+                    className="h-16 w-16"
+                    style={{ animation: "nb-float 3s ease-in-out infinite" }}
+                  />
+                  <p className="nb-display text-lg">You're in, {me.name}</p>
+                  <p className="max-w-xs text-sm font-medium text-ink/70">
+                    Waiting for the operator to load stage 1 of the ladder…
+                  </p>
+                </div>
+              )}
+
+              {phase === "question" && (
+                <div className="grid place-items-center gap-3 py-8 text-center">
+                  <div className="flex gap-2">
+                    {[0, 1, 2].map((i) => (
+                      <span
+                        key={i}
+                        className="h-4 w-4 border-2 border-ink bg-sky"
+                        style={{
+                          animation: `nb-float 1s ease-in-out ${i * 0.18}s infinite`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <p className="nb-display text-lg">Order matters.</p>
+                  <p className="max-w-xs text-sm font-medium text-ink/70">
+                    The steps land on your screen the second the operator
+                    starts the {SEQUENCE_SECONDS}s clock — then you rebuild
+                    the sequence.
+                  </p>
+                </div>
+              )}
+
+              {(phase === "voting" || phase === "locked") && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {/* your order */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="nb-tag bg-ink text-white">
+                        Your order
+                      </span>
+                      <span className="nb-tag bg-sand">
+                        {seqDraft.length}/{nSteps}
+                      </span>
+                    </div>
+                    <ol className="mt-2 grid gap-2">
+                      {seqDraft.map((stepIdx, pos) => (
+                        <li key={stepIdx}>
+                          <button
+                            type="button"
+                            onClick={() => pullStep(stepIdx)}
+                            disabled={phase !== "voting"}
+                            className={`flex w-full items-stretch gap-3 border-[3px] border-ink bg-mint text-left transition-all duration-150 ${
+                              phase === "voting"
+                                ? "hover:-translate-y-0.5"
+                                : "cursor-not-allowed"
+                            }`}
+                          >
+                            <span className="nb-display flex w-10 shrink-0 items-center justify-center border-r-[3px] border-ink bg-white text-lg">
+                              {pos + 1}
+                            </span>
+                            <span className="flex-1 px-3 py-3 text-sm font-bold leading-snug">
+                              {seqStage.steps[stepIdx]}
+                            </span>
+                            {phase === "voting" && (
+                              <span className="nb-display flex w-9 shrink-0 items-center justify-center border-l-[3px] border-ink bg-white text-lg">
+                                ✕
+                              </span>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                      {Array.from({
+                        length: Math.max(0, nSteps - seqDraft.length),
+                      }).map((_, i) => (
+                        <li
+                          key={`slot-${i}`}
+                          className="flex items-center gap-3 border-[3px] border-dashed border-ink/40 px-3 py-3.5 text-xs font-bold uppercase tracking-[0.14em] text-ink/40"
+                        >
+                          {seqDraft.length + i + 1} · next step
+                        </li>
+                      ))}
+                    </ol>
+
+                    {phase === "voting" && seqDraft.length === nSteps && (
+                      <button
+                        type="button"
+                        onClick={() => void submitOrder()}
+                        disabled={seqLockedIn}
+                        className={`nb-btn nb-shadow mt-3 w-full text-sm ${
+                          seqLockedIn ? "bg-mint" : "bg-cobalt text-white"
+                        }`}
+                      >
+                        {seqLockedIn
+                          ? "✓ Order locked in"
+                          : "Lock in my order →"}
+                      </button>
+                    )}
+                    {phase === "voting" && seqDraft.length < nSteps && (
+                      <p className="mt-3 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+                        Place every step, then lock it in
+                      </p>
+                    )}
+                  </div>
+
+                  {/* available steps */}
+                  <div>
+                    <span className="nb-tag bg-sky">Available steps</span>
+                    <div className="mt-2 grid gap-2">
+                      {seqRemaining.map((stepIdx) => (
+                        <button
+                          key={stepIdx}
+                          type="button"
+                          onClick={() => placeStep(stepIdx)}
+                          disabled={phase !== "voting"}
+                          className="flex w-full items-stretch gap-3 border-[3px] border-ink bg-white text-left transition-all duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <span className="nb-display flex w-10 shrink-0 items-center justify-center border-r-[3px] border-ink bg-sky text-lg">
+                            {seqStage.order.indexOf(stepIdx) + 1}
+                          </span>
+                          <span className="flex-1 px-3 py-3 text-sm font-bold leading-snug">
+                            {seqStage.steps[stepIdx]}
+                          </span>
+                        </button>
+                      ))}
+                      {seqRemaining.length === 0 && (
+                        <p className="border-[3px] border-dashed border-ink/40 px-3 py-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+                          Every step placed — check your order
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {phase === "revealed" && (
+                <div className="grid gap-4">
+                  <div
+                    className={`border-[3px] border-ink px-4 py-3 ${
+                      seqMatched ? "bg-mint" : "bg-sand"
+                    }`}
+                  >
+                    <p className="nb-display text-sm">
+                      {seqMatched
+                        ? `Star fuelled! +1 ★ → ${me.stars} total`
+                        : "No star this round"}
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-ink/80">
+                      {seqStage.why}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <span className="nb-tag bg-ink text-white">
+                        Your order
+                      </span>
+                      <ol className="mt-2 grid gap-1.5">
+                        {seqDraft.length === 0 && (
+                          <li className="border-[3px] border-dashed border-ink/40 px-3 py-3 text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+                            No order locked in
+                          </li>
+                        )}
+                        {seqDraft.map((stepIdx, pos) => (
+                          <li
+                            key={`mine-${stepIdx}`}
+                            className={`flex items-start gap-2 border-2 border-ink px-2.5 py-2 text-sm font-bold ${
+                              stepIdx === pos
+                                ? "bg-mint"
+                                : "bg-coral text-white"
+                            }`}
+                          >
+                            <span className="nb-tag shrink-0 bg-white text-ink">
+                              {pos + 1}
+                            </span>
+                            <span className="pt-0.5">
+                              {seqStage.steps[stepIdx]}
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                    <div>
+                      <span className="nb-tag bg-sun">Correct sequence</span>
+                      <ol className="mt-2 grid gap-1.5">
+                        {seqStage.steps.map((step, i) => (
+                          <li
+                            key={`ok-${i}`}
+                            className="flex items-start gap-2 border-2 border-ink bg-white px-2.5 py-2 text-sm font-bold"
+                          >
+                            <span className="nb-tag shrink-0 bg-ink text-white">
+                              {i + 1}
+                            </span>
+                            <span className="pt-0.5">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ---------- Game 01: option board ---------- */}
+          {!isSeq && (
           <div className="mt-5 grid gap-3">
             {phase === "lobby" && (
               <div className="grid place-items-center gap-3 py-8 text-center">
@@ -382,6 +720,13 @@ function Arena({
                 );
               })}
           </div>
+          )}
+
+          {seqErr && (
+            <p className="mt-4 border-[3px] border-ink bg-coral px-3 py-2 text-sm font-bold text-white">
+              {seqErr}
+            </p>
+          )}
 
           {error && (
             <p className="mt-4 border-[3px] border-ink bg-coral px-3 py-2 text-sm font-bold text-white">
@@ -389,13 +734,37 @@ function Arena({
             </p>
           )}
 
-          {phase === "question" && (
+          {!isSeq && phase === "question" && (
             <p className="mt-4 border-[3px] border-dashed border-ink/40 px-3 py-2 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
               Options are hidden until the timer starts
             </p>
           )}
 
-          {phase === "voting" && (
+          {isSeq && phase === "question" && (
+            <p className="mt-4 border-[3px] border-dashed border-ink/40 px-3 py-2 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+              Steps are hidden until the timer starts
+            </p>
+          )}
+
+          {isSeq && phase === "voting" && (
+            <p className="mt-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+              {seqDraft.length < nSteps
+                ? "Tap steps top to bottom to build your sequence"
+                : seqLockedIn
+                  ? "Locked in — tap a step to pull it back out"
+                  : "All placed — lock your order in"}
+            </p>
+          )}
+
+          {isSeq && phase === "locked" && (
+            <p className="mt-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
+              {seqSubmission
+                ? "Round closed — waiting for the operator's reveal"
+                : "Round closed with no order locked in"}
+            </p>
+          )}
+
+          {!isSeq && phase === "voting" && (
             <p className="mt-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
               {picked === null
                 ? "Tap an option to lock it in"
@@ -403,13 +772,13 @@ function Arena({
             </p>
           )}
 
-          {phase === "locked" && (
+          {!isSeq && phase === "locked" && (
             <p className="mt-4 text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/50">
               Round closed — waiting for the operator's reveal
             </p>
           )}
 
-          {phase === "revealed" && (
+          {!isSeq && phase === "revealed" && (
             <div className="mt-5 border-t-[3px] border-ink pt-4">
               <div
                 className={`border-[3px] border-ink px-4 py-3 ${
@@ -431,7 +800,8 @@ function Arena({
       </div>
 
       {/* leaderboard */}
-      {roster && roster.length > 0 && (phase === "lobby" || phase === "revealed") && (
+      {roster && roster.length > 0 &&
+        (phase === "lobby" || phase === "revealed" || room.finished) && (
         <div className="mt-5 border-[3px] border-ink bg-white shadow-[5px_5px_0_0_#0e0e0e]">
           <div className="border-b-[3px] border-ink bg-ink px-4 py-2">
             <span className="nb-display text-sm text-sun">Star board</span>
